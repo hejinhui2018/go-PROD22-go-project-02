@@ -181,11 +181,17 @@ func (s *Service) ReapExpiredDetailed() ReapResult {
 			t.NextRetry = time.Time{}
 			out.Failed++
 		} else {
+			// The per-task retry backoff (t.NextRetry) already gates this
+			// task independently in EligibleTasks, Task.Lease and the plan
+			// filter. Do NOT fold it into the release-level DispatchNotBefore:
+			// while paused that gate tracks the pause window (ResumeNotBefore),
+			// and overwriting it with t.NextRetry can shorten the window so
+			// that dispatch reopens before the configured pause ends. Keeping
+			// the gates separate lets BuildPlan (ResumeNotBefore-based) and
+			// DispatchOpen (DispatchNotBefore-based) converge after an early
+			// resume that follows a lease reclamation.
 			t.Status = domain.TaskQueued
 			t.NextRetry = now.Add(time.Duration(t.Attempts) * time.Minute)
-			if r.Status == domain.StatusPaused {
-				r.DispatchNotBefore = t.NextRetry
-			}
 			out.Requeued++
 		}
 		t.ReleaseLease()

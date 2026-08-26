@@ -74,17 +74,9 @@ func (s *Service) QueueRollback(releaseID, reason string) ([]*domain.Task, error
 	if s.State.RollbackBatches == nil {
 		s.State.RollbackBatches = map[string]store.RollbackBatch{}
 	}
-	if checkpoint, ok := s.State.RollbackBatches[releaseID]; ok && checkpoint.Queued > 0 {
-		queued := []*domain.Task{}
-		for _, t := range s.State.Tasks {
-			if t.ReleaseID == releaseID && t.Status == domain.TaskRollbackQueued {
-				queued = append(queued, t)
-			}
-		}
-		sort.Slice(queued, func(i, j int) bool { return queued[i].DeviceID < queued[j].DeviceID })
-		return queued, nil
-	}
-	if r.Status != domain.StatusRollbackPending {
+	// The checkpoint records persisted progress, not batch completion. A
+	// snapshot failure can leave only a prefix queued, so resume missing tasks.
+	if !r.Terminal() && r.Status != domain.StatusRollbackPending {
 		if err := r.Transition(domain.StatusRollbackPending); err != nil {
 			return nil, err
 		}
@@ -92,10 +84,15 @@ func (s *Service) QueueRollback(releaseID, reason string) ([]*domain.Task, error
 	queued := []*domain.Task{}
 	candidates := []*domain.Task{}
 	for _, t := range s.State.Tasks {
-		if t.ReleaseID != releaseID || (t.Status != domain.TaskCompleted && t.Status != domain.TaskFailed) {
+		if t.ReleaseID != releaseID {
 			continue
 		}
-		candidates = append(candidates, t)
+		switch t.Status {
+		case domain.TaskRollbackQueued, domain.TaskRollingBack, domain.TaskRolledBack:
+			queued = append(queued, t)
+		case domain.TaskCompleted, domain.TaskFailed:
+			candidates = append(candidates, t)
+		}
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].DeviceID < candidates[j].DeviceID })
 	for _, t := range candidates {
